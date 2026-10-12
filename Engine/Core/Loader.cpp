@@ -72,6 +72,10 @@ void *__wrap_SDL_LoadObject(const char *sofile) {
 			continue;
 
 		auto lookupdir = std::string(FileIO::getLaunchDir()) + std::string("dlls") + DELIMITER;
+#ifdef _WIN64
+		// 64-bit libraries live in their own subfolder, so that 32-bit and 64-bit engines can share one game folder.
+		lookupdir += std::string("x64") + DELIMITER;
+#endif
 		if (targetMajor > 0)
 			lookupdir += std::to_string(targetMajor) + '.' + std::to_string(targetMinor) + DELIMITER;
 
@@ -764,7 +768,13 @@ CONSTRUCTOR setupCrashReporter() {
 		using SetNewMode    = void (*)(int);
 		using SetNewHandler = void (*)(void (*)());
 		auto snm            = reinterpret_cast<SetNewMode>(SDL_LoadFunction(runtime, "?_set_new_mode@@YAHH@Z"));
-		auto snh            = reinterpret_cast<SetNewHandler>(SDL_LoadFunction(runtime, "?_set_new_handler@@YAP6AHI@ZP6AHI@Z@Z"));
+		// MSVC name mangling encodes size_t differently on 32-bit and 64-bit msvcrt.
+#ifdef _WIN64
+		constexpr const char *snhName = "?_set_new_handler@@YAP6AH_K@ZP6AH0@Z@Z";
+#else
+		constexpr const char *snhName = "?_set_new_handler@@YAP6AHI@ZP6AHI@Z@Z";
+#endif
+		auto snh = reinterpret_cast<SetNewHandler>(SDL_LoadFunction(runtime, snhName));
 		if (snm)
 			snm(1);
 		if (snh)
