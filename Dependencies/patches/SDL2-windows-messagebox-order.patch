@@ -1,0 +1,25 @@
+--- a/src/video/windows/SDL_windowsmessagebox.c	2026-10-12 06:48:29.916380136 -0400
++++ b/src/video/windows/SDL_windowsmessagebox.c	2026-10-12 06:48:29.919034038 -0400
+@@ -135,7 +135,7 @@
+ 
+         if (GetButtonIndex(messageboxdata, SDL_MESSAGEBOX_BUTTON_RETURNKEY_DEFAULT, &buttonindex)) {
+             /* Focus on the first default return-key button */
+-            HWND buttonctl = GetDlgItem(hDlg, (int)(IDBUTTONINDEX0 + buttonindex));
++            HWND buttonctl = GetDlgItem(hDlg, (int)(IDBUTTONINDEX0 + (messageboxdata->numbuttons - 1 - buttonindex)));
+             if (buttonctl == NULL) {
+                 EndDialog(hDlg, IDINVALPTRDLGITEM);
+             }
+@@ -167,11 +167,11 @@
+         /* Return the ID of the button that was pushed */
+         if (wParam == IDOK) {
+             if (GetButtonIndex(messageboxdata, SDL_MESSAGEBOX_BUTTON_RETURNKEY_DEFAULT, &buttonindex)) {
+-                EndDialog(hDlg, IDBUTTONINDEX0 + buttonindex);
++                EndDialog(hDlg, IDBUTTONINDEX0 + (messageboxdata->numbuttons - 1 - buttonindex));
+             }
+         } else if (wParam == IDCANCEL) {
+             if (GetButtonIndex(messageboxdata, SDL_MESSAGEBOX_BUTTON_ESCAPEKEY_DEFAULT, &buttonindex)) {
+-                EndDialog(hDlg, IDBUTTONINDEX0 + buttonindex);
++                EndDialog(hDlg, IDBUTTONINDEX0 + (messageboxdata->numbuttons - 1 - buttonindex));
+             } else {
+                 /* Closing of window was requested by user or system. It would be rude not to comply. */
+                 EndDialog(hDlg, IDCLOSED);
