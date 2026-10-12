@@ -1,0 +1,30 @@
+Optional 64-bit libraries for onscripter-ru_x64.exe
+===================================================
+
+The 64-bit engine loads optional libraries from dlls\x64 (and dlls\x64\<windows
+version>\ if present). The 32-bit engine keeps using dlls\. Both engines can
+therefore share one game folder.
+
+ANGLE (OpenGL ES on Direct3D, used with prefer-renderer=ANGLE2 or ANGLE3)
+  libEGL.dll, libGLESv2.dll
+  MSYS2 mingw64 package mingw-w64-x86_64-angleproject 2.1.r25748.890b5d8f-6
+  License: BSD-3-Clause (licenses\angle.txt)
+
+  ANGLE is built with MinGW GCC and needs these runtime libraries:
+  libgcc_s_seh-1.dll, libstdc++-6.dll   mingw-w64-x86_64-libgcc / libstdc++ 16.2.0-5
+                                        GPL-3 with GCC Runtime Library Exception
+                                        (licenses\gcc-*.txt)
+  libwinpthread-1.dll                   mingw-w64-x86_64-libwinpthread 14.0.0.r426.g4564ee4b5-1
+                                        MIT and BSD (licenses\winpthreads.txt)
+  zlib1.dll                             mingw-w64-x86_64-zlib 1.3.2-2
+                                        zlib license (licenses\zlib.txt)
+
+  ANGLE uses the d3dcompiler_47.dll that is part of Windows 10 and 11.
+
+Dr. Mingw crash reporter
+  exchndl.dll, mgwhelp.dll, dbghelp.dll, dbgcore.dll, symsrv.dll
+  drmingw-0.9.13-win64.7z from https://github.com/jrfonseca/drmingw/releases
+  License: LGPL-2.1 (licenses\drmingw*.txt); dbghelp, dbgcore and symsrv are
+  Microsoft redistributables shipped with Dr. Mingw.
+
+MSYS2 packages are available from https://repo.msys2.org/mingw/mingw64/.
