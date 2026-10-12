@@ -17,51 +17,72 @@ jobs:
     runs-on: ubuntu-22.04
 
     strategy:
+      fail-fast: false
       matrix:
+        ARCH: ["i686", "x86_64"]
         BUILD_TYPE: ["debug", "release"]
         DISCORD_INTEGRATION: ["using discord", "not using discord"]
 
     env:
       BUILD: ${{ github.run_number }}
+      TRIPLE: ${{ matrix.ARCH }}-w64-mingw32
+      # Debian package suffix and the file name suffix used for side-by-side installs.
+      PKG_ARCH: ${{ matrix.ARCH == 'x86_64' && 'x86-64' || 'i686' }}
+      SUFFIX: ${{ matrix.ARCH == 'x86_64' && 'x64' || 'x86' }}
       dev: ${{ matrix.BUILD_TYPE == 'debug' && '_dev' || '' }}
       cmd: ${{ matrix.BUILD_TYPE == 'release' && '--release-build --strip-binary' || '' }}
       discord: ${{ matrix.DISCORD_INTEGRATION == 'using discord' && '--with-discord' || '' }}
+      discord_tag: ${{ matrix.DISCORD_INTEGRATION == 'using discord' && '_discord' || '' }}
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
       - name: Install deps
         run: |
           sudo apt-get update
-          sudo apt-get install -y binutils-mingw-w64-i686 gcc-mingw-w64-i686 g++-mingw-w64-i686 yasm python3-pip
+          sudo apt-get install -y "binutils-mingw-w64-${PKG_ARCH}" "gcc-mingw-w64-${PKG_ARCH}" "g++-mingw-w64-${PKG_ARCH}" yasm python3-pip python-is-python3
           pip3 install meson ninja
 
       - name: Env setup
         run: |
-          echo "Build number ${BUILD}"
+          echo "Build number ${BUILD} for ${TRIPLE}"
           mkdir -p ciout
 
       - name: Configure
         env:
-          CC: i686-w64-mingw32-gcc
-          CXX: i686-w64-mingw32-g++
-          LD: i686-w64-mingw32-ld
-          AR: i686-w64-mingw32-ar
-          RANLIB: i686-w64-mingw32-ranlib
-          AS: i686-w64-mingw32-as
-        run: ./configure --cross=i686-w64-mingw32 ${{env.cmd}} ${{env.discord}}
+          CC: ${{ env.TRIPLE }}-gcc
+          CXX: ${{ env.TRIPLE }}-g++
+          LD: ${{ env.TRIPLE }}-ld
+          AR: ${{ env.TRIPLE }}-ar
+          RANLIB: ${{ env.TRIPLE }}-ranlib
+          AS: ${{ env.TRIPLE }}-as
+        run: ./configure "--cross=${TRIPLE}" ${{env.cmd}} ${{env.discord}}
 
       - name: Build
         run: |
           make clean
-          make -j$(nproc)
-          mv DerivedData/MinGW-i686/onscripter-ru.exe ciout
-          cp -r Resources/Windows/dlls ciout/dlls
+          make -j"$(nproc)"
+          files=("onscripter-ru_${SUFFIX}.exe")
+          mv "DerivedData/MinGW-${{ matrix.ARCH }}/onscripter-ru.exe" "ciout/onscripter-ru_${SUFFIX}.exe"
+          if [ -n "${{ env.discord }}" ]; then
+            cp "DerivedData/MinGW-${{ matrix.ARCH }}/Dependencies/onscrlib/lib/discord_game_sdk_${SUFFIX}.dll" ciout/
+            files+=("discord_game_sdk_${SUFFIX}.dll")
+          fi
+          # Optional ANGLE and crash handler DLLs: dlls/ is 32-bit, dlls/x64/ is 64-bit.
+          # Each zip carries only its own set, so both can be extracted into one folder.
+          if [ "${{ matrix.ARCH }}" == "x86_64" ]; then
+            mkdir -p ciout/dlls
+            cp -r Resources/Windows/dlls/x64 ciout/dlls/x64
+          else
+            cp -r Resources/Windows/dlls ciout/dlls
+            rm -rf ciout/dlls/x64
+          fi
+          files+=(dlls)
           cd ciout
-          zip -qry onscripter-ru_win_r${BUILD}${{env.dev}}${{env.discord}}.zip onscripter-ru.exe dlls
+          zip -qry "onscripter-ru_win_${SUFFIX}_r${BUILD}${{env.dev}}${{env.discord_tag}}.zip" "${files[@]}"
 
       - name: Upload files
         uses: ncipollo/release-action@v1
@@ -86,7 +107,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
@@ -107,7 +128,7 @@ jobs:
       - name: Build
         run: |
           make clean
-          make -j$(nproc)
+          make -j"$(nproc)"
           mv DerivedData/Posix-x86_64/onscripter-ru ciout
           cd ciout
           zip -qry onscripter-ru_linux64_r${BUILD}${{env.dev}}.zip onscripter-ru
@@ -137,7 +158,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
