@@ -604,7 +604,7 @@ void ScriptParser::write32s(int32_t i) {
 }
 
 int32_t ScriptParser::read32s() {
-	if (file_io_buf_ptr + sizeof(int16_t) > file_io_read_len)
+	if (file_io_buf_ptr + sizeof(int32_t) > file_io_read_len)
 		return 0;
 
 	int32_t i =

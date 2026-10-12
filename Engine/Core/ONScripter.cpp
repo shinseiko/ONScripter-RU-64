@@ -1516,7 +1516,7 @@ void ONScripter::flush(int refresh_mode, GPU_Rect *scene_rect, GPU_Rect *hud_rec
 
 void ONScripter::createScreenshot(GPU_Image *first, GPU_Rect *first_r, GPU_Image *second, GPU_Rect *second_r) {
 	char filename[64];
-	std::snprintf(filename, sizeof(filename), "%ld.png", time(nullptr));
+	std::snprintf(filename, sizeof(filename), "%lld.png", static_cast<long long>(time(nullptr)));
 	FILE *fp = FileIO::openFile(filename, "wb", script_h.save_path);
 	if (fp) {
 		auto screenshot = gpu.getScriptImage();
@@ -2517,7 +2517,9 @@ void ONScripter::loadEnvData() {
 void ONScripter::saveEnvData() {
 	file_io_buf.clear();
 	write32s(window.getFullscreen());
-	write32s(volume_on_flag ? 1 : 0);
+	// A temporary scriptmute clears volume_on_flag; store the user's own setting instead,
+	// or a restart during a muted scene (e.g. changing the language) leaves the game muted.
+	write32s((volume_on_flag || script_mute) ? 1 : 0);
 	write32s(0);
 	write32s(0);
 	writeStr(default_env_font);

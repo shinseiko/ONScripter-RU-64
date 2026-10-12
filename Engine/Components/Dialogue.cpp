@@ -559,9 +559,12 @@ void DialogueController::layoutLines(TextRenderingState &state) {
 		if (!line.rubyPieces.empty())
 			previousDescender /= 2;
 
-		Fontinfo &myFi = line.getPieces().front()->getPreFontInfo();                                                                // W_CUSTOM
-		auto &style    = myFi.style();                                                                                              // W_CUSTOM
-		y += ((line.maxAscender + previousDescender) * lineHeightMultiplier) + line.inlineOverrides.interline.get(style.interline); // W_CUSTOM
+		// W_CUSTOM: extra line spacing. A line without pieces has no font info to take it from
+		// (front() on the empty vector read a stale pointer and crashed 64-bit builds).
+		int interline = 0;
+		if (!line.getPieces().empty())
+			interline = line.getPieces().front()->getPreFontInfo().style().interline;
+		y += ((line.maxAscender + previousDescender) * lineHeightMultiplier) + line.inlineOverrides.interline.get(interline);
 		line.position.y   = y;
 		previousDescender = line.maxDescender;
 	}
