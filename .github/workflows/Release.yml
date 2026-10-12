@@ -6,11 +6,12 @@ on:
   pull_request:
     branches: ["master", "test"]
   workflow_dispatch:
-    inputs:
-      build_type:
-        description: "Choose build type (debug or release)"
-        required: true
-        default: "release"
+
+# Build jobs only read the repository. The Release job alone gets write access.
+permissions:
+  contents: read
+
+# Actions are pinned to full commit SHAs (repository policy); the tag is in the comment.
 
 jobs:
   Windows:
@@ -36,7 +37,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
 
@@ -50,6 +51,7 @@ jobs:
         run: |
           echo "Build number ${BUILD} for ${TRIPLE}"
           mkdir -p ciout
+          echo "ZIP_NAME=onscripter-ru_win_${SUFFIX}_r${BUILD}${dev}${discord_tag}" >> "$GITHUB_ENV"
 
       - name: Configure
         env:
@@ -82,16 +84,15 @@ jobs:
           fi
           files+=(dlls)
           cd ciout
-          zip -qry "onscripter-ru_win_${SUFFIX}_r${BUILD}${{env.dev}}${{env.discord_tag}}.zip" "${files[@]}"
+          zip -qry "${ZIP_NAME}.zip" "${files[@]}"
 
-      - name: Upload files
-        uses: ncipollo/release-action@v1
+      - name: Upload artifact
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          allowUpdates: true
-          replacesArtifacts: false
-          tag: z${{ env.BUILD }}
-          name: ONScripter-ru r${{ env.BUILD }}
-          artifacts: "ciout/*.zip"
+          name: ${{ env.ZIP_NAME }}
+          path: ciout/${{ env.ZIP_NAME }}.zip
+          if-no-files-found: error
+          retention-days: 7
 
   Linux:
     runs-on: ubuntu-22.04
@@ -107,7 +108,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
 
@@ -121,6 +122,7 @@ jobs:
         run: |
           echo "Build number ${BUILD}"
           mkdir -p ciout
+          echo "ZIP_NAME=onscripter-ru_linux64_r${BUILD}${dev}" >> "$GITHUB_ENV"
 
       - name: Configure
         run: ./configure ${{env.cmd}}
@@ -131,20 +133,20 @@ jobs:
           make -j"$(nproc)"
           mv DerivedData/Posix-x86_64/onscripter-ru ciout
           cd ciout
-          zip -qry onscripter-ru_linux64_r${BUILD}${{env.dev}}.zip onscripter-ru
+          zip -qry "${ZIP_NAME}.zip" onscripter-ru
           rm onscripter-ru
-          cd ..
 
-      - name: Upload files
-        uses: ncipollo/release-action@v1
+      - name: Upload artifact
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          allowUpdates: true
-          replacesArtifacts: false
-          tag: z${{ env.BUILD }}
-          name: ONScripter-ru r${{ env.BUILD }}
-          artifacts: "ciout/*.zip"
+          name: ${{ env.ZIP_NAME }}
+          path: ciout/${{ env.ZIP_NAME }}.zip
+          if-no-files-found: error
+          retention-days: 7
 
+  # Disabled: the macos-11 runner no longer exists. Not part of the release until it is fixed.
   macOS:
+    if: false
     runs-on: macos-11
 
     strategy:
@@ -158,7 +160,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
 
@@ -170,21 +172,51 @@ jobs:
         run: |
           echo "Build number ${BUILD}"
           mkdir -p ciout
+          echo "ZIP_NAME=onscripter-ru_osx_r${BUILD}${dev}" >> "$GITHUB_ENV"
 
       - name: Build
         run: |
           xcodebuild ARCHS=x86_64 ONLY_ACTIVE_ARCH=NO -target onscripter-ru-osx -configuration ${{ matrix.BUILD_TYPE }}
           mv build/${{ matrix.BUILD_TYPE }}/onscripter-ru-osx.app ciout
           cd ciout
-          zip -qry onscripter-ru_osx_r${BUILD}${{ env.dev }}.zip onscripter-ru-osx.app
+          zip -qry "${ZIP_NAME}.zip" onscripter-ru-osx.app
           rm -rf onscripter-ru-osx.app
-          cd -
 
-      - name: Upload files
-        uses: ncipollo/release-action@v1
+      - name: Upload artifact
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          allowUpdates: true
-          replacesArtifacts: false
-          tag: z${{ env.BUILD }}
-          name: ONScripter-ru r${{ env.BUILD }}
-          artifacts: "ciout/*.zip"
+          name: ${{ env.ZIP_NAME }}
+          path: ciout/${{ env.ZIP_NAME }}.zip
+          if-no-files-found: error
+          retention-days: 7
+
+  # Publishes one release with every zip in a single step. Releases are immutable, so
+  # nothing is published unless all build jobs pass, and pull requests only build.
+  Release:
+    needs: [Windows, Linux]
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-22.04
+
+    permissions:
+      contents: write
+
+    env:
+      BUILD: ${{ github.run_number }}
+      GH_TOKEN: ${{ github.token }}
+
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: onscripter-ru_*
+          path: ciout
+          merge-multiple: true
+
+      - name: Create release
+        run: |
+          ls -l ciout
+          gh release create "z${BUILD}" ciout/*.zip \
+            --repo "${GITHUB_REPOSITORY}" \
+            --target "${GITHUB_SHA}" \
+            --title "ONScripter-ru r${BUILD}" \
+            --notes "Built from ${GITHUB_SHA} on ${GITHUB_REF_NAME} (run ${GITHUB_RUN_ID})."
