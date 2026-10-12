@@ -941,23 +941,324 @@ void ONScripter::setGameIdentifier(const char *gameid) {
 	script_h.setStr(&cmdline_game_id, gameid);
 }
 
+bool ONScripter::useCloudStorage() const {
+#ifdef WIN32
+	// W_CUSTOM: iCloud for Windows is opt-in, being installed is not consent to store saves there.
+	return ons_cfg_options.find("enable-icloud") != ons_cfg_options.end();
+#else
+	return ons_cfg_options.find("disable-icloud") == ons_cfg_options.end();
+#endif
+}
+
+// W_CUSTOM: JuliusWinther/onscripter-ru-w builds stored the saves of every script in this one
+// folder instead of one folder per game id like umineko-project builds (and this build) do.
+static constexpr const char *FORK_SAVE_DIR_NAME = "UminekoPS3fication";
+
+// ---------- W_CUSTOM: migration of saves from the former default location ----------
+//
+// A legacy save folder contains:
+//   envdata, gloval.sav, readlbl.sav   global settings, flags, read text
+//   saveN.dat                          one per slot
+//   screenshot\ssN.bmp                 slot thumbnails, belong to saveN.dat
+//   caches\*.png                       generated images, recreated by the engine
+// In iCloud the files may be online-only placeholders, so any read can fail.
+// Nothing here is fatal: the game must still start, with or without old saves.
+
+static constexpr const char *SAVE_CACHE_DIR_NAME = "caches";
+static constexpr const char *MIGRATION_TITLE     = "Save migration";
+
+// Shows a message box and returns the index of the pressed button.
+// SDL 2.0.9 gives every Windows button a fixed width and does not measure the text:
+// keep labels at about 10 characters ("Copy saves") or they are cut off.
+// The first button is the Enter default, the last one is the Escape default
+// and is also returned when the box cannot be shown or is closed.
+static int askMigration(uint32_t flags, const std::string &message, std::initializer_list<const char *> labels) {
+	std::vector<SDL_MessageBoxButtonData> buttons;
+	for (auto label : labels)
+		buttons.push_back({0, static_cast<int>(buttons.size()), label});
+	buttons.front().flags |= SDL_MESSAGEBOX_BUTTON_RETURNKEY_DEFAULT;
+	buttons.back().flags |= SDL_MESSAGEBOX_BUTTON_ESCAPEKEY_DEFAULT;
+#ifdef WIN32
+	// SDL lays Windows buttons out right to left; reverse them so the first label is leftmost.
+	// Button ids travel with the buttons, so the returned index is unaffected.
+	std::reverse(buttons.begin(), buttons.end());
+#endif
+
+	int pressed = -1;
+	if (!window.showMessageBox(flags, MIGRATION_TITLE, message.c_str(), static_cast<int>(buttons.size()), buttons.data(), pressed) ||
+	    pressed < 0)
+		return static_cast<int>(buttons.size()) - 1;
+	return pressed;
+}
+
+struct MigrationResult {
+	size_t copied{0};
+	size_t skipped{0};
+	bool stopped{false};
+};
+
+static bool isSlotSaveFile(const std::string &name) {
+	return name.size() > 8 && name.compare(0, 4, "save") == 0 && name.compare(name.size() - 4, 4, ".dat") == 0;
+}
+
+// upgradeFork: the source is a fork folder, whose 4.0 slot saves are marked 4.1 on the way.
+static bool copyLegacyFile(const std::string &src, const std::string &dst, const std::string &name, bool upgradeFork) {
+	try {
+		std::vector<uint8_t> buffer;
+		size_t len = 0;
+		if (!FileIO::readFile(src, len, buffer))
+			return false;
+		buffer.resize(len); // readFile adds a terminating zero
+		if (upgradeFork && isSlotSaveFile(name) && !ONScripter::upgradeForkSaveVersion(buffer))
+			sendToLog(LogLevel::Info, "Save migration: %s is not a valid 4.0 save, copied unchanged\n", src.c_str());
+		return FileIO::writeFile(dst, buffer.data(), buffer.size());
+	} catch (const std::exception &e) {
+		// readFile throws when the file opens but cannot be read, e.g. an offline cloud placeholder.
+		sendToLog(LogLevel::Error, "Save migration: %s (%s)\n", e.what(), src.c_str());
+		return false;
+	}
+}
+
+// Copies src into dst recursively, skipping the subfolder skipDir (if not empty) at this level.
+static void copyLegacyDir(const std::string &src, const std::string &dst, const std::string &skipDir, bool upgradeFork,
+                          MigrationResult &result) {
+	if (!FileIO::makeDir(dst, true)) {
+		sendToLog(LogLevel::Error, "Save migration: cannot create %s\n", dst.c_str());
+		result.stopped = true;
+		return;
+	}
+
+	for (auto &name : FileIO::scanDir(src, FileType::File)) {
+		bool copied = false;
+		while (!(copied = copyLegacyFile(src + name, dst + name, name, upgradeFork))) {
+			sendToLog(LogLevel::Error, "Save migration: failed to copy %s\n", (src + name).c_str());
+			int choice = askMigration(SDL_MESSAGEBOX_WARNING,
+			                          "Could not copy this file:\n" + src + name +
+			                              "\n\nIf your old saves are in iCloud, iCloud may be offline or the file is not downloaded yet.\n"
+			                              "Start iCloud and press Retry, skip this file, or stop the migration.",
+			                          {"Retry", "Skip file", "Stop"});
+			if (choice == 1) {
+				result.skipped++;
+				break;
+			}
+			if (choice == 2) {
+				result.stopped = true;
+				return;
+			}
+		}
+		if (copied)
+			result.copied++;
+	}
+
+	for (auto &name : FileIO::scanDir(src, FileType::Directory)) {
+		if (name == skipDir)
+			continue;
+		copyLegacyDir(src + name + DELIMITER, dst + name + DELIMITER, "", upgradeFork, result);
+		if (result.stopped)
+			return;
+	}
+}
+
+static size_t legacyDirSize(const std::string &dir) {
+	size_t total = 0;
+	for (auto &name : FileIO::scanDir(dir, FileType::File)) {
+		size_t len = 0;
+		if (FileIO::accessFile(dir + name, FileType::File, &len))
+			total += len;
+	}
+	for (auto &name : FileIO::scanDir(dir, FileType::Directory))
+		total += legacyDirSize(dir + name + DELIMITER);
+	return total;
+}
+
+struct LegacySaveSource {
+	std::string dir;     // ends with DELIMITER
+	bool forkLayout;     // JuliusWinther fork folder (all scripts mixed), else umineko-project per game id
+};
+
+static bool hasFiles(const std::string &dir) {
+	return FileIO::accessFile(dir, FileType::Directory) && !FileIO::scanDir(dir).empty();
+}
+
+// Storage roots older builds used: the default one first (iCloud if installed, unless
+// disable-icloud), then the other one. Nothing on platforms where the default did not move.
+static std::vector<std::string> legacyStorageRoots(bool legacyCloud) {
+	std::vector<std::string> roots;
+	for (bool cloud : {legacyCloud, !legacyCloud}) {
+		const char *root = FileIO::getLegacyStorageDir(cloud);
+		if (root && std::find(roots.begin(), roots.end(), root) == roots.end())
+			roots.emplace_back(root);
+	}
+	return roots;
+}
+
+// Candidate folders for this game id: exact umineko-project folders first, then fork folders.
+static std::vector<LegacySaveSource> findLegacySaveSources(const std::string &gameid, const std::string &saveDir, bool legacyCloud) {
+	std::vector<LegacySaveSource> sources;
+	auto roots = legacyStorageRoots(legacyCloud);
+	for (auto &root : roots)
+		sources.push_back({root + gameid + DELIMITER, false});
+	if (gameid != FORK_SAVE_DIR_NAME)
+		for (auto &root : roots)
+			sources.push_back({root + FORK_SAVE_DIR_NAME + DELIMITER, true});
+
+	sources.erase(std::remove_if(sources.begin(), sources.end(),
+	                             [&](const LegacySaveSource &s) { return s.dir == saveDir || !hasFiles(s.dir); }),
+	              sources.end());
+	return sources;
+}
+
+// umineko-project save folders of other scripts, which will be offered when those start.
+static std::vector<std::string> otherLegacyGames(const std::string &gameid, bool legacyCloud) {
+	std::vector<std::string> games;
+	for (auto &root : legacyStorageRoots(legacyCloud)) {
+		for (auto &name : FileIO::scanDir(root, FileType::Directory)) {
+			if (name == gameid || name == FORK_SAVE_DIR_NAME || !hasFiles(root + name + DELIMITER))
+				continue;
+			if (std::find(games.begin(), games.end(), name) == games.end())
+				games.push_back(name);
+		}
+	}
+	return games;
+}
+
+static std::string describeOtherGames(const std::vector<std::string> &games) {
+	if (games.empty())
+		return {};
+	std::string list;
+	for (auto &game : games)
+		list += (list.empty() ? "" : ", ") + game;
+	// SDL 2.0.9 message boxes do not wrap text, so long sentences are broken by hand.
+	return "\n\nSaves for other scripts were also found: " + list +
+	       ".\nThey will be offered the first time you start that script.\n"
+	       "If you have already played it with this version, start the game once with --migrate-saves.";
+}
+
+static void copyLegacySaves(const LegacySaveSource &source, const std::string &saveDir, ONScripter::LegacySaveMode mode);
+
+// Asks how to treat umineko-project saves. Returns None when the user prefers to start new saves.
+static ONScripter::LegacySaveMode askUpstreamSaveMode() {
+	using Mode = ONScripter::LegacySaveMode;
+	if (askMigration(SDL_MESSAGEBOX_INFORMATION,
+	                 "These saves were made with an umineko-project build and use an older save format.\n\n"
+	                 "Convert them to the current format?\n"
+	                 "Each save is converted when you first load it, the original file is kept next to it.",
+	                 {"Convert", "No"}) == 0)
+		return Mode::Convert;
+	if (askMigration(SDL_MESSAGEBOX_INFORMATION,
+	                 "Use them in legacy mode instead?\n"
+	                 "They stay in the older format and are read as such. Saving to a slot writes the current format.\n\n"
+	                 "Otherwise the old saves are not copied and you start with new saves.",
+	                 {"Legacy", "Start new"}) == 0)
+		return Mode::Load;
+	return Mode::None;
+}
+
+// Offers to copy saves from one of the sources into saveDir. The legacy files are never
+// modified, so older engine builds keep working on their copy. Runs when saveDir is empty,
+// or always with force (--migrate-saves), in which case existing files are overwritten.
+static void migrateLegacySaves(const std::vector<LegacySaveSource> &sources, const std::string &saveDir,
+                               const std::string &gameid, const std::string &otherGames, bool force) {
+	bool targetEmpty = FileIO::scanDir(saveDir).empty();
+	if (!targetEmpty && !force)
+		return;
+
+	bool firstQuestion = true;
+	for (auto &source : sources) {
+		std::string question = "Saved games from an older version were found in:\n" + source.dir;
+		if (source.forkLayout)
+			question += "\n\nThat version kept the saves of all scripts in one folder.\n"
+			            "Copy them only if they were made with the script you are starting now: " + gameid + ".";
+		question += "\n\nCopy them to the new save location?\n" + saveDir + "\n\nThe old files are not changed.";
+		if (!targetEmpty)
+			question += "\n\nFiles that already exist in the new location will be overwritten.";
+		if (firstQuestion)
+			question += otherGames;
+		firstQuestion = false;
+
+		if (askMigration(SDL_MESSAGEBOX_INFORMATION, question, {"Copy saves", "Don't copy"}) != 0) {
+			sendToLog(LogLevel::Info, "Save migration from %s declined\n", source.dir.c_str());
+			continue;
+		}
+
+		auto mode = ONScripter::LegacySaveMode::None;
+		if (!source.forkLayout) {
+			mode = askUpstreamSaveMode();
+			if (mode == ONScripter::LegacySaveMode::None) {
+				sendToLog(LogLevel::Info, "Save migration from %s: starting with new saves\n", source.dir.c_str());
+				return;
+			}
+		}
+
+		copyLegacySaves(source, saveDir, mode);
+		return;
+	}
+}
+
+static void copyLegacySaves(const LegacySaveSource &source, const std::string &saveDir, ONScripter::LegacySaveMode mode) {
+	const auto &legacyDir = source.dir;
+	std::string skipDir = SAVE_CACHE_DIR_NAME;
+	auto cacheDir       = legacyDir + SAVE_CACHE_DIR_NAME + DELIMITER;
+	if (FileIO::accessFile(cacheDir, FileType::Directory)) {
+		auto megabytes = (legacyDirSize(cacheDir) + 512 * 1024) / (1024 * 1024);
+		auto cacheQuestion = "Also copy the image cache (" + std::to_string(megabytes) +
+		                     " MB)?\n\nThe game recreates these images when needed, so this is optional.";
+		if (askMigration(SDL_MESSAGEBOX_INFORMATION, cacheQuestion, {"Copy cache", "Skip cache"}) == 0)
+			skipDir.clear();
+	}
+
+	MigrationResult result;
+	copyLegacyDir(legacyDir, saveDir, skipDir, source.forkLayout, result);
+	sendToLog(LogLevel::Info, "Save migration from %s: %zu copied, %zu skipped%s\n", legacyDir.c_str(),
+	          result.copied, result.skipped, result.stopped ? ", stopped" : "");
+
+	if (mode != ONScripter::LegacySaveMode::None && !ONScripter::writeLegacySaveMarker(saveDir, mode)) {
+		sendToLog(LogLevel::Error, "Save migration: could not write %s, old saves will not load\n", ONScripter::LEGACY_SAVES_MARKER);
+		result.stopped = true;
+	}
+
+	if (result.stopped || result.skipped > 0) {
+		askMigration(SDL_MESSAGEBOX_WARNING,
+		             "The migration did not copy everything (" + std::to_string(result.copied) + " files copied, " +
+		                 std::to_string(result.skipped) + " skipped" + (result.stopped ? ", stopped" : "") +
+		                 ").\n\nStart the game with --migrate-saves to try again.",
+		             {"OK"});
+	}
+}
+
 void ONScripter::lookupSavePath() {
-	const char *gameid = script_h.game_identifier.c_str();
-	char gamename[20];
-	if (script_h.game_identifier.empty()) {
+	// W_CUSTOM: one folder per game id again, like umineko-project builds.
+	std::string gameid = script_h.game_identifier;
+	if (gameid.empty()) {
+		char gamename[20];
 		std::snprintf(gamename, sizeof(gamename), "ONScripter-%x", script_h.game_hash);
 		gameid = gamename;
 	}
 
-	bool trycloud       = ons_cfg_options.find("disable-icloud") == ons_cfg_options.end();
-	const char *storage = FileIO::getStorageDir(trycloud);
+	const char *storage = FileIO::getStorageDir(useCloudStorage());
 
 	script_h.save_path = new char[PATH_MAX];
-	std::snprintf(script_h.save_path, PATH_MAX, "%s%s%c", storage, "UminekoPS3fication", DELIMITER); // W_CUSTOM
+	std::snprintf(script_h.save_path, PATH_MAX, "%s%s%c", storage, gameid.c_str(), DELIMITER);
 
-	if (!FileIO::makeDir(script_h.save_path)) {
+	if (!FileIO::makeDir(script_h.save_path, true)) {
 		ons.errorAndExit("Could not create save directory!");
 	}
+
+	// W_CUSTOM: older builds saved elsewhere (ProgramData or iCloud, see FileIO::setStorageDir).
+	// migrate-saves is a one-shot switch; drop it so that it is never written back to ons.cfg.
+	bool forceMigration = ons_cfg_options.erase("migrate-saves") > 0;
+	bool legacyCloud    = ons_cfg_options.find("disable-icloud") == ons_cfg_options.end();
+	auto sources        = findLegacySaveSources(gameid, script_h.save_path, legacyCloud);
+	auto otherGames     = otherLegacyGames(gameid, legacyCloud);
+
+	for (auto &source : sources)
+		sendToLog(LogLevel::Info, "Save migration: found %s saves in %s\n",
+		          source.forkLayout ? "fork (all scripts)" : "umineko-project", source.dir.c_str());
+	for (auto &game : otherGames)
+		sendToLog(LogLevel::Info, "Save migration: saves of another script found: %s\n", game.c_str());
+
+	if (!sources.empty())
+		migrateLegacySaves(sources, script_h.save_path, gameid, describeOtherGames(otherGames), forceMigration);
 }
 
 int ONScripter::ownInit() {

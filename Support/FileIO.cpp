@@ -585,6 +585,11 @@ const char *FileIO::getPlatformSpecificDir() {
 
 static char storageDir[PATH_MAX];
 static char storageCloudDir[PATH_MAX];
+static char legacyStorageDir[PATH_MAX];
+
+#ifdef WIN32
+static constexpr const char *WINDOWS_STORAGE_NAME = "Umineko-Project";
+#endif
 
 bool FileIO::setStorageDir(bool force_userdir) {
 	(void)force_userdir;
@@ -610,14 +615,21 @@ bool FileIO::setStorageDir(bool force_userdir) {
 	const char *launch = getLaunchDir();
 	std::snprintf(storageDir, PATH_MAX, "%sSaveData%c", launch, DELIMITER);
 #elif defined(WIN32)
-	// On Windows store in [APPDATA]/appname
-	// CSIDL_COMMON_APPDATA: [Profiles]/All Users/Application Data
-	// CSIDL_APPDATA:        [Profiles]/[User]/Application Data
+	// W_CUSTOM: store in the per-user %APPDATA%\Umineko-Project.
+	// The former default, %ProgramData%\appname, is shared between users and
+	// runs into permission and folder protection problems on modern Windows.
+	// It is still reported by getLegacyStorageDir() so old saves can be migrated.
+	// iCloud (storageCloudDir) is only used with enable-icloud now, see ONScripter::useCloudStorage().
+	// force_userdir (--current-user-appdata) is kept for compatibility, it is the default now.
 
 	wchar_t wpath[PATH_MAX];
-	HRESULT res = SHGetFolderPathW(nullptr, force_userdir ? CSIDL_APPDATA : CSIDL_COMMON_APPDATA, nullptr, 0, wpath);
+	HRESULT res = SHGetFolderPathW(nullptr, CSIDL_APPDATA, nullptr, 0, wpath);
 	if (res == S_OK)
-		std::snprintf(storageDir, PATH_MAX, "%s%c%s%c", decodeUTF16String(wpath).c_str(), DELIMITER, applicationName, DELIMITER);
+		std::snprintf(storageDir, PATH_MAX, "%s%c%s%c", decodeUTF16String(wpath).c_str(), DELIMITER, WINDOWS_STORAGE_NAME, DELIMITER);
+
+	res = SHGetFolderPathW(nullptr, CSIDL_COMMON_APPDATA, nullptr, 0, wpath);
+	if (res == S_OK)
+		std::snprintf(legacyStorageDir, PATH_MAX, "%s%c%s%c", decodeUTF16String(wpath).c_str(), DELIMITER, applicationName, DELIMITER);
 
 	// With iCloud we use ~/iCloudDrive/appname
 	const char *home = getHomeDir();
@@ -633,6 +645,15 @@ bool FileIO::setStorageDir(bool force_userdir) {
 		copystr(storageDir, CURRENT_REL_PATH, PATH_MAX);
 	}
 	return true;
+}
+
+const char *FileIO::getLegacyStorageDir(bool cloud) {
+	if (legacyStorageDir[0] == '\0')
+		return nullptr;
+	// The cloud dir did not move, but older builds used it automatically whenever it existed.
+	if (cloud && storageCloudDir[0] != '\0')
+		return storageCloudDir;
+	return legacyStorageDir;
 }
 
 const char *FileIO::getStorageDir(bool cloud) {
