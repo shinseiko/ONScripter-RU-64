@@ -308,6 +308,7 @@ esac
 echo -n "Checking cpu type...      "
 ARCH=
 case "$PLATFORM" in
+x86_64*mingw32) echo "x86_64"; ARCH=x86_64;;
 *mingw32)  echo "i686";     ARCH=i686;;
 *droid*86*)echo "i386";     ARCH=i386;;
 *86_64*)   echo "x86_64";   ARCH=x86_64;;
@@ -535,7 +536,7 @@ case "$CXX_TMP:$SYS" in
     LINK_END_GROUP="-Wl,-Bstatic -lstdc++ -lpthread -Wl,-Bdynamic -Wl,--end-group"
     EXTRALDFLAGS="$EXTRALDFLAGS -static-libgcc"
     EXTRAOSCFLAGS="$EXTRAOSCFLAGS -DWIN32 -DPTW32_STATIC_LIB"
-    EXTRAOSLDFLAGS="$EXTRAOSLDFLAGS -lwinmm -lshlwapi -lws2_32 -lglu32 -lopengl32 -Wl,--wrap=SDL_LoadObject -Wl,--large-address-aware"
+    EXTRAOSLDFLAGS="$EXTRAOSLDFLAGS -lwinmm -lshlwapi -lws2_32 -lglu32 -lopengl32 -Wl,--wrap=SDL_LoadObject"
   ;;
   *clang*:"Droid")
     LINK_START_GROUP="-Wl,--start-group"
@@ -549,7 +550,7 @@ case "$CXX_TMP:$SYS" in
     LINK_END_GROUP="-Wl,-Bstatic -lstdc++ -lpthread -Wl,-Bdynamic -Wl,--end-group"
     EXTRALDFLAGS="$EXTRALDFLAGS -static-libgcc -static-libstdc++ -mthreads"
     EXTRAOSCFLAGS="$EXTRAOSCFLAGS -DWIN32 -DPTW32_STATIC_LIB -mthreads"
-    EXTRAOSLDFLAGS="$EXTRAOSLDFLAGS -lwinmm -lshlwapi -lws2_32 -lglu32 -lopengl32 -Wl,--wrap=SDL_LoadObject -Wl,--large-address-aware"
+    EXTRAOSLDFLAGS="$EXTRAOSLDFLAGS -lwinmm -lshlwapi -lws2_32 -lglu32 -lopengl32 -Wl,--wrap=SDL_LoadObject"
   ;;
   g++*:"Posix" | *clang*:"Posix")
     LINK_START_GROUP="-Wl,--start-group"
@@ -575,6 +576,11 @@ case "$CXX_TMP:$SYS" in
     EXTRAOSLDFLAGS="$EXTRAOSLDFLAGS -Wl,-framework,OpenGL -Wl,-framework,VideoToolbox -Wl,-framework,CoreMedia"
   ;;
 esac
+
+# Let 32-bit Windows builds use up to 4 GB of address space.
+if [ "$SYS" == "MinGW" ] && [ "$ARCH" == "i686" ]; then
+  EXTRAOSLDFLAGS="$EXTRAOSLDFLAGS -Wl,--large-address-aware"
+fi
 
 echo "done"
 
@@ -635,7 +641,12 @@ genlink swresample
 genlink ass
 if [[ $USEDISCORD ]]; then
   genlink discordsdk
-  genlink discord_game_sdk $SHAREDLIB
+  if [ "$SYS" == "MinGW" ]; then
+    # Import library naming discord_game_sdk_x86.dll or discord_game_sdk_x64.dll.
+    genlink discord_game_sdk .dll.a
+  else
+    genlink discord_game_sdk $SHAREDLIB
+  fi
 fi
 genlink fribidi
 genlink freetype

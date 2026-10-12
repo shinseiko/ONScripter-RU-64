@@ -1,6 +1,6 @@
 pkgname=discord
 pkgver=3.2.1
-pkgrel=1
+pkgrel=3
 
 sources=(
     "https://dl-game-sdk.discordapp.net/${pkgver}/discord_game_sdk.zip" #https://discord.com/developers/docs/game-sdk/sdk-starter-guide
@@ -58,6 +58,39 @@ copy() {
     fi
 }
 
+# Windows: install the DLL under an architecture-suffixed name and generate a
+# matching import library, so 32-bit and 64-bit engines can share one folder:
+#   onscripter-ru_x86.exe -> discord_game_sdk_x86.dll
+#   onscripter-ru_x64.exe -> discord_game_sdk_x64.dll
+installWindowsLibs() {
+    local libdir=x86
+    local suffix=x86
+    if [ "$(getTargetCPU)" == "x86_64" ]; then
+        libdir=x86_64
+        suffix=x64
+    fi
+    local dllname="discord_game_sdk_${suffix}.dll"
+
+    local dlltool=dlltool
+    if $CROSS_BUILD; then
+        dlltool="${CROSS_SYS_PREFIX}$(getHostPrefix)-dlltool"
+    fi
+
+    # Both DLLs export DiscordCreate undecorated, but on x86 the SDK headers
+    # declare it __stdcall, so callers reference DiscordCreate@12. --kill-at
+    # keeps that decoration for linking while importing the plain name.
+    local create=DiscordCreate
+    local killat=()
+    if [ "$suffix" == "x86" ]; then
+        create=DiscordCreate@12
+        killat=(--kill-at)
+    fi
+    printf 'LIBRARY %s\nEXPORTS\n    %s\n' "$dllname" "$create" >discord_game_sdk.def
+
+    cp "../lib/$libdir/discord_game_sdk.dll" "$outdir/lib/$dllname" &&
+    "$dlltool" "${killat[@]}" -d discord_game_sdk.def -D "$dllname" -l "$outdir/lib/libdiscord_game_sdk.dll.a"
+}
+
 configure() {
     local logfile="$logdir/$pkgname.copylibs.log"
     local ret=0
@@ -67,9 +100,9 @@ configure() {
     cp ../lib/x86_64/discord_game_sdk.bundle $outdir/lib/libdiscord_game_sdk.bundle >>"$logfile" || ret=$?
     cp ../lib/x86_64/discord_game_sdk.dylib $outdir/lib/libdiscord_game_sdk.dylib >>"$logfile" || ret=$?
     cp ../lib/x86_64/discord_game_sdk.so $outdir/lib/libdiscord_game_sdk.so >>"$logfile" || ret=$?
-    # Usually used for win32 but can be swapped out to use 64bit
-    cp ../lib/x86/discord_game_sdk.dll $outdir/lib/libdiscord_game_sdk.dll >>"$logfile" || ret=$?
-    cp ../lib/x86/discord_game_sdk.dll.lib $outdir/lib/libdiscord_game_sdk.lib >>"$logfile" || ret=$?
+    if [ "$(getTarget)" == "win32" ]; then
+        installWindowsLibs >>"$logfile" 2>&1 || ret=$?
+    fi
     if (( $ret )); then
         tail -n 20 "$logfile"
         error "Copying libs %s failed" "$pkgname"

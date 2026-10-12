@@ -34,10 +34,16 @@ configopts=(
 )
 
 configopts_win32=(
-    '--build=i686-pc-mingw32'
-    '--host=i686-pc-mingw32'
     '--disable-directwrite'
 )
+
+# Cross builds already receive --host from build.sh.
+if ! $CROSS_BUILD; then
+    configopts_win32+=(
+        "--build=$(getTargetCPU)-w64-mingw32"
+        "--host=$(getTargetCPU)-w64-mingw32"
+    )
+fi
 
 configopts_ios=( )
 configopts_mac=( )
