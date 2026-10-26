@@ -21,3 +21,6 @@ build
 # IDEA
 .idea
 cmake-build-*/
+
+# Visual Studio
+.vs/

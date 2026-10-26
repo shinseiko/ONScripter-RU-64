@@ -1138,6 +1138,12 @@ private:
 
 	void loadCursor(int no, const char *str, int x, int y, bool abs_flag = false);
 	void lookupSavePath();
+
+public:
+	// Whether saves go to cloud storage (iCloud) instead of the local storage dir.
+	bool useCloudStorage() const;
+
+private:
 	void saveAll(bool no_error = false);
 	void loadEnvData();
 	void saveEnvData();
@@ -1526,6 +1532,24 @@ private:
 	void writeChecksum();
 	int loadSaveFile(int no);
 	int saveSaveFile(int no, const char *savestr = nullptr, bool no_error = false);
+
+	// W_CUSTOM: save format compatibility with umineko-project builds.
+	// Their 4.0 saves lack the text style fields this fork added; the fork itself wrote
+	// 4.0 with the fields, so 4.0 is ambiguous and 4.1 marks the fork layout.
+public:
+	enum class LegacySaveMode { None, Load, Convert };
+	// File in the save folder that marks its 4.0 saves as umineko-project layout.
+	static constexpr const char *LEGACY_SAVES_MARKER = "upstream-saves.txt";
+	static LegacySaveMode readLegacySaveMarker(const std::string &saveDir);
+	static bool writeLegacySaveMarker(const std::string &saveDir, LegacySaveMode mode);
+	// Turns a fork 4.0 save file (same layout as 4.1) into 4.1: version byte and checksum.
+	static bool upgradeForkSaveVersion(std::vector<uint8_t> &data);
+
+private:
+	bool reading_upstream_layout{false};
+	// Where the missing text style fields belong in the file being read, with the values used.
+	std::vector<std::pair<size_t, std::array<int32_t, 3>>> upstream_style_inserts;
+	void convertLoadedUpstreamSave(int no);
 	bool readIniFile(const char *path, IniContainer &result);
 	bool readAdler32Hash(const char *path, uint32_t &adler);
 

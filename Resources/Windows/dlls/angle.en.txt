@@ -37,4 +37,7 @@ You could specify custom d3dcompiler library if you have it installed.
 
 You could copy newer versions of libGLESv2.dll and libEGL.dll from your
 browser folder, for example, Opera and Mozilla Firefox use them.
-You must ensure that they are 32-bit.
+You must ensure that they are 32-bit for onscripter-ru_x86.exe.
+
+The 64-bit engine (onscripter-ru_x64.exe) loads its libraries from dlls\x64
+instead; see dlls\x64\info.txt. Only 64-bit libraries work there.

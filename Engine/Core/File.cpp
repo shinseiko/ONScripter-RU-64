@@ -21,7 +21,9 @@ const uint32_t SAVEFILE_MAGIC_NUMBER = 0x534E4F52; // RONS
 const uint32_t SAVEFILE_INIT_HASH    = 0x69F23B1B;
 const uint32_t SAVEFILE_HASH_LENGH   = sizeof(uint32_t);
 const int SAVEFILE_VERSION_MAJOR     = 4;
-const int SAVEFILE_VERSION_MINOR     = 0;
+const int SAVEFILE_VERSION_MINOR     = 1; // W_CUSTOM: 4.1 = 4.0 with the fork's text style fields
+const int SAVEFILE_VERSION_FORK_4_0  = 400;
+const size_t SAVEFILE_MINOR_OFFSET   = sizeof(uint32_t) + 1; // after magic and major version
 
 void ONScripter::readFontinfo(Fontinfo &fi) {
 	fi.clear();
@@ -57,9 +59,15 @@ void ONScripter::readFontinfo(Fontinfo &fi) {
 	style.is_centered       = read32s();
 	style.is_fitted         = read32s();
 
-	style.is_aligned_left  = read32s(); // W_CUSTOM
-	style.is_aligned_right = read32s(); // W_CUSTOM
-	style.interline        = read32s(); // W_CUSTOM
+	if (reading_upstream_layout) {
+		// umineko-project saves do not have these fields: keep the defaults and remember
+		// where they belong, so the file can be converted after a successful load.
+		upstream_style_inserts.push_back({file_io_buf_ptr, {style.is_aligned_left, style.is_aligned_right, style.interline}});
+	} else {
+		style.is_aligned_left  = read32s(); // W_CUSTOM
+		style.is_aligned_right = read32s(); // W_CUSTOM
+		style.interline        = read32s(); // W_CUSTOM
+	}
 
 	style.shadow_distance[0] = read32s();
 	style.shadow_distance[1] = read32s();
@@ -932,17 +940,117 @@ void ONScripter::writeChecksum() {
 }
 
 int ONScripter::loadSaveFile(int no) {
-	if (!readSaveFileHeader(no) || !verifyChecksum()) {
+	SaveFileInfo info;
+	if (!readSaveFileHeader(no, &info) || !verifyChecksum()) {
 		return -1;
 	}
 
+	// W_CUSTOM: a 4.0 file is in umineko-project layout only where the migration marked it so;
+	// otherwise it was written by the fork, which has the same layout as 4.1.
+	auto legacyMode = LegacySaveMode::None;
+	if (info.version == SAVEFILE_VERSION_FORK_4_0)
+		legacyMode = readLegacySaveMarker(script_h.save_path); // marker is per save folder, not per savedir
+	reading_upstream_layout = legacyMode != LegacySaveMode::None;
+	upstream_style_inserts.clear();
+
 	loadSaveFileData();
+	reading_upstream_layout = false;
 
 	if (file_io_read_len != file_io_buf_ptr + SAVEFILE_HASH_LENGH) {
 		ons.errorAndExit("Unrecognised data was discovered in the save file");
 	}
 
+	if (legacyMode == LegacySaveMode::Convert)
+		convertLoadedUpstreamSave(no);
+
 	return 0;
+}
+
+// W_CUSTOM: file_io_buf still holds the umineko-project save that was just loaded. Insert the
+// missing text style fields where the loader recorded them, mark it 4.1 and write it back,
+// keeping the original as saveN.upstream.dat. Header (date, description) is kept as is.
+void ONScripter::convertLoadedUpstreamSave(int no) {
+	char filename[32];
+	std::snprintf(filename, sizeof(filename), "save%d.dat", no);
+	char backupname[32];
+	std::snprintf(backupname, sizeof(backupname), "save%d.upstream.dat", no);
+
+	std::vector<uint8_t> original(file_io_buf.begin(), file_io_buf.begin() + file_io_read_len);
+	size_t dataLen = file_io_read_len - SAVEFILE_HASH_LENGH;
+
+	std::vector<uint8_t> converted;
+	converted.reserve(dataLen + upstream_style_inserts.size() * 3 * sizeof(int32_t) + SAVEFILE_HASH_LENGH);
+	size_t pos = 0;
+	for (auto &insert : upstream_style_inserts) {
+		converted.insert(converted.end(), original.begin() + pos, original.begin() + insert.first);
+		pos = insert.first;
+		for (int32_t value : insert.second)
+			for (int shift = 0; shift < 32; shift += 8)
+				converted.push_back(static_cast<uint8_t>((value >> shift) & 0xff));
+	}
+	converted.insert(converted.end(), original.begin() + pos, original.begin() + dataLen);
+	converted[SAVEFILE_MINOR_OFFSET] = static_cast<uint8_t>(SAVEFILE_VERSION_MINOR);
+
+	auto hash = static_cast<uint32_t>(adler32_z(SAVEFILE_INIT_HASH, converted.data(), converted.size()));
+	for (int shift = 0; shift < 32; shift += 8)
+		converted.push_back(static_cast<uint8_t>((hash >> shift) & 0xff));
+
+	file_io_buf = original;
+	if (saveFileIOBuf(backupname)) {
+		sendToLog(LogLevel::Error, "Save conversion: could not back up %s, leaving it unconverted\n", filename);
+		return;
+	}
+	file_io_buf = converted;
+	if (saveFileIOBuf(filename)) {
+		sendToLog(LogLevel::Error, "Save conversion: could not write %s\n", filename);
+		return;
+	}
+	sendToLog(LogLevel::Info, "Save conversion: %s converted to %d.%d (%zu text styles)\n", filename,
+	          SAVEFILE_VERSION_MAJOR, SAVEFILE_VERSION_MINOR, upstream_style_inserts.size());
+}
+
+ONScripter::LegacySaveMode ONScripter::readLegacySaveMarker(const std::string &saveDir) {
+	std::vector<uint8_t> content;
+	size_t len = 0;
+	try {
+		if (!FileIO::readFile(saveDir + LEGACY_SAVES_MARKER, len, content))
+			return LegacySaveMode::None;
+	} catch (const std::exception &) {
+		return LegacySaveMode::None;
+	}
+	std::string text(content.begin(), content.begin() + len);
+	return text.find("convert-on-load") != std::string::npos ? LegacySaveMode::Convert : LegacySaveMode::Load;
+}
+
+bool ONScripter::writeLegacySaveMarker(const std::string &saveDir, LegacySaveMode mode) {
+	std::string text =
+	    "This folder contains saves from umineko-project builds of ONScripter-RU.\r\n"
+	    "Their save version 4.0 lacks fields that later builds added, so 4.0 saves\r\n"
+	    "in this folder are read in that older layout.\r\n";
+	if (mode == LegacySaveMode::Convert)
+		text += "convert-on-load: each such save is converted to version 4.1 when it is first loaded,\r\n"
+		        "the original is kept as saveN.upstream.dat.\r\n";
+	return FileIO::writeFile(saveDir + LEGACY_SAVES_MARKER, reinterpret_cast<const uint8_t *>(text.data()), text.size());
+}
+
+bool ONScripter::upgradeForkSaveVersion(std::vector<uint8_t> &data) {
+	if (data.size() < SAVEFILE_MINOR_OFFSET + 1 + SAVEFILE_HASH_LENGH)
+		return false;
+	uint32_t magic = data[0] | data[1] << 8 | data[2] << 16 | static_cast<uint32_t>(data[3]) << 24;
+	int version    = static_cast<int8_t>(data[SAVEFILE_MINOR_OFFSET - 1]) * 100 + static_cast<int8_t>(data[SAVEFILE_MINOR_OFFSET]);
+	if (magic != SAVEFILE_MAGIC_NUMBER || version != SAVEFILE_VERSION_FORK_4_0)
+		return false;
+
+	size_t dataLen = data.size() - SAVEFILE_HASH_LENGH;
+	uint32_t stored = data[dataLen] | data[dataLen + 1] << 8 | data[dataLen + 2] << 16 | static_cast<uint32_t>(data[dataLen + 3]) << 24;
+	if (static_cast<uint32_t>(adler32_z(SAVEFILE_INIT_HASH, data.data(), dataLen)) != stored)
+		return false; // corrupted: leave it alone instead of blessing it with a new checksum
+
+	data[SAVEFILE_MINOR_OFFSET] = static_cast<uint8_t>(SAVEFILE_VERSION_MINOR);
+	auto hash                   = static_cast<uint32_t>(adler32_z(SAVEFILE_INIT_HASH, data.data(), dataLen));
+	for (size_t i = 0; i < SAVEFILE_HASH_LENGH; i++)
+		data[dataLen + i] = static_cast<uint8_t>((hash >> (8 * i)) & 0xff);
+	return true;
 }
 
 int ONScripter::saveSaveFile(int no, const char *savestr, bool no_error) {

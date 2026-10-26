@@ -95,7 +95,11 @@ configopts_droid=(
 )
 
 cflags_linux="-D__STDC_CONSTANT_MACROS"
-cflags_win32="-D__STDC_CONSTANT_MACROS -m32 -march=i686"
+if [ "$(getTargetCPU)" == "x86_64" ]; then
+    cflags_win32="-D__STDC_CONSTANT_MACROS"
+else
+    cflags_win32="-D__STDC_CONSTANT_MACROS -m32 -march=i686"
+fi
 
 configopts=(
     #static build

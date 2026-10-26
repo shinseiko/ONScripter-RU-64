@@ -51,6 +51,9 @@ const char *getWorkingDir();
 const char *getHomeDir();
 const char *getPlatformSpecificDir(); // may return nullptr
 const char *getStorageDir(bool cloud = false);
+// Storage dir that older builds used by default (cloud dir if cloud and available),
+// nullptr on platforms where the default did not change.
+const char *getLegacyStorageDir(bool cloud);
 
 bool accessFile(const std::string &path, FileType type = FileType::Any, size_t *len = nullptr, bool unicode = true);
 int seekFile(FILE *fp, size_t off, int m);

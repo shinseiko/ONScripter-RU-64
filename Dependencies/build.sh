@@ -631,7 +631,7 @@ fi
 getHost() {
     case $(uname) in
         Darwin*) echo "darwin-macOS" ;;
-        MINGW32*) echo "win32" ;;
+        MINGW32*|MINGW64*) echo "win32" ;;
         *) echo "linux-like" ;; # For bsd compat
     esac
 }
@@ -681,7 +681,14 @@ getTargetCPU() {
             fi
         ;;
         win32)
-            echo "i686"
+            # "win32" is the target family; the CPU comes from the triple
+            # (cross builds) or from the MSYS2 shell flavour (native builds).
+            if [[ $CROSS_TRIPLE == x86_64* ]] || \
+               { ! $CROSS_BUILD && [[ $(uname) == MINGW64* ]]; }; then
+                echo "x86_64"
+            else
+                echo "i686"
+            fi
         ;;
         linux-like)
             if [ "$(uname -m)" == "x86_64" ]; then
